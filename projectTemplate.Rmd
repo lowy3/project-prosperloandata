@@ -1,0 +1,387 @@
+lowye: prosper贷款数据EDA分析
+========================================================
+互联网技术的发展,为金融创新提供了条件,并未不断涌现的金融创新在实践中的应用于推广奠定了坚实基础.其中,网络借贷就是资金借贷活动借助互联网平台而实现的一种去中介化的模式创新.作为网贷平台的主要形式,P2P平台通过直接撮合借贷双方,改变了传统商业银行作为资金融通中介的借贷模式,近年来发展迅速.2005年3月,英国Zopa的成立标志着P2P融资模式的形成,之后美国相继出现了Prosper和Lending Club等P2P平台公司.而Prosper作为此次研究的重点,本文选取了该公司自2006年至2014年总共11W的贷款数据,试图从EDA分析角度出发,分析Prosper贷款人质量,贷款资金价格界定规则等问题.
+
+数据解释:
+
+BorrowerRate:借款标利率,作为P2P平台资金借贷价格的代理变量,BorrowerRate不包含其他费用,是筹资者付给投资人的报酬,也是融资最直接和最重要的成本,其体现了资金供求双方在综合考虑各种因素情况下所认可的资金使用成本.
+Term:期限,筹资者通过网贷平台进行借款时所承诺的最终偿还期限,借款期限体现该资产的流动性,期限较长的资产应存在着流动性溢价(利率上涨).
+CreditGrade/ProsperRating(Alpha):信用等级,前者反映的是2009年7月1日前客户的信用等级,后者反映的是2009年7月1日后的信用等级.信用等级越高,其偿债能力越强.
+CreditScore:由消费信用公司提供的消费信用评分,同信用评级作用.
+StatedMonthlyIncome:客户月收入,月收入越高,投资者对该借款本息按时回流越有信心.
+DelinquenciesLast7Years:信用资料提交时借款人过去7年违约次数,该指标在一定程度上可以体现借款标发布者的信用状况
+BankCarduse:信用资料提交时借款人信用卡使用额度和信用卡总透支额度的百分比,本文将这个数据分成四组(mild use;medium use;heavy use;super use)
+LoanOriginalAmount:借款人在借款时已经向prosper借入的资金,如果没有历史记录则为0,显然,借入本金越多,其还款压力越大,但是这项指标大的话也可能说明该客户对prosper依赖性较强.
+DebtToIncomeRatio:借款人的债务收入比,债务收入比越高说明筹资者财务状况越差,还款能力较低.其向P2P平台借款时,投资者应要求有更高的回报.
+Occupation:贷款人职业
+IncomeRange:贷款人年收入范围
+BorrowerState:贷款人借款地点
+```{r echo=FALSE, message=FALSE, warning=FALSE, packages}
+#导入数据和包
+library(ggplot2)
+library(GGally)
+library(scales)
+library(memisc)
+library(gridExtra)
+library(tidyr)
+library(mice)
+library(dplyr)
+library(gridExtra)
+loandata <- read.csv('prosperLoanData.csv')
+head(loandata)
+str(loandata)
+```
+
+#转换数据
+```{r}
+#日期字符转换
+loandata$LoanOriginationDate <- as.Date(loandata$LoanOriginationDate)
+loandata$ListingCreationDate <- as.Date(loandata$ListingCreationDate)
+loandata$DateCreditPulled <- as.Date(loandata$DateCreditPulled)
+
+#对客户的消费信用评级,数据中有高低范围,将这两个数值取平均值做计算
+loandata$CreditScore <-(loandata$CreditScoreRangeLower+loandata$CreditScoreRangeUpper)/2
+
+#将两个衡量信用等级的数据转换
+#这里的数据来自2009年7月1日之前
+loandata$CreditGrade <- 
+  ordered(loandata$CreditGrade,levels = c("NC","HR","E","D","C","B","A","AA"))
+table(loandata$ProsperRating..Alpha.)
+#2009年7月1日之后
+loandata$ProsperRating..Alpha.<-
+  ordered(loandata$ProsperRating..Alpha.,levels = c("HR","E","D","C","B","A","AA")) 
+
+#因为2009年7月1日是一个数据截点，因此将数据分成两段处理
+loandata$Phase[loandata$LoanOriginationDate > "2009-07-01"] <- "After 2009"
+loandata$Phase[loandata$LoanOriginationDate < "2009-07-01"] <- "Before 2009"
+
+
+#对之前未在prosper的客户建立库(数据解释:0或NA是未使用过prosper的客户,反之是使用过的)
+loandata$Customer_clarify[loandata$TotalProsperLoans > 0] <- "Previous Borrower"
+loandata$Customer_clarify[loandata$TotalProsperLoans == 0] <- "New Borrower"
+loandata <- replace_na(loandata,replace = list(Customer_clarify = "New Borrower"))
+loandata$Customer_clarify <- factor(loandata$Customer_clarify)
+
+
+#对信用卡使用程度进行衡量
+loandata$BankCardUse[loandata$BankcardUtilization<quantile(loandata$BankcardUtilization,
+probs = 0.25,"na.rm" = TRUE)] <- "Mild Use"
+
+loandata$BankCardUse[loandata$BankcardUtilization>=quantile(loandata$BankcardUtilization,
+probs = 0.25,'na.rm'=TRUE) & (loandata$BankcardUtilization <
+quantile(loandata$BankcardUtilization,probs =0.5,'na.rm'=TRUE))] <- "Medium Use"
+
+loandata$BankCardUse[loandata$BankcardUtilization>=quantile(loandata$BankcardUtilization,
+probs = 0.5,'na.rm'=TRUE)&(loandata$BankcardUtilization<1)] <- "Heavy Use"
+
+loandata$BankCardUse[loandata$BankcardUtilization>=1] <- "Super Use"
+
+loandata$BankCardUse <- factor(loandata$BankCardUse,levels=c("Mild Use","Medium Use",
+"Heavy Use","Super Use"))
+```
+
+#借款人指标分析
+```{r}
+#借款人地址分布
+ggplot(aes(BorrowerState),data = loandata) + 
+  geom_bar(color=I('black'),fill = I('#FFCC22')) +
+  theme(axis.text.x = element_text(angle = 90))
+```
+从借款人分布来看,California借款人最多,由网上信息得知,prosper的总部位于旧金山,那么加利福尼亚的客户最多这一点是有实际意义的.而其他几个周也有超过5000的用户,并且大部分是发达城市.
+
+#借款人收入
+```{r}
+loandata$IncomeRange<-ordered(loandata$IncomeRange,levels=c("Not displayed",
+                                                "Not employed","$0",
+                                                "$1-24,999",
+                                                "$25,000-49,999",
+                                                "$50,000-74,999",
+                                                "75,000-99,999",
+                                                "$100,000+"))
+ggplot(aes(IncomeRange),data = loandata) +
+  geom_bar(color = I('black'),fill = I('#FF77FF'))
+```
+这一点很让人奇怪,借款人收入缺失的就有超过1W的数据,并且0收入群体以及没有工作的群体也占有一定的比例,而其他大部分借款人的收入在$25000--$75000之间.
+
+#借款人的职业
+```{r}
+qplot(x=Occupation,data=loandata,color=I('black'),fill=I('#099DD9'))+
+theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+这个数据大家几乎都没有认真填写,大部分写了other,因此这部分数据失真严重
+
+#借款人债务收入比:债务收入比越高说明筹资者财务状况越差,还款能力相应较低
+```{r}
+ggplot(aes(DebtToIncomeRatio),data = loandata) +
+  geom_histogram(color=I('black'),fill=I('#FFDDAA')) +
+  xlim(0,1) 
+  
+```
+从上图可以看到,债务收入比呈现左偏的形态,说明大部分借款人的债务收入比较低,这也有利于他们
+偿还债务,维护平台稳定
+
+
+#信用卡使用比率
+```{r}
+ggplot(aes(BankCardUse),data = subset(loandata,!is.na(BankcardUtilization))) +
+  geom_bar(color = I('black'),fill = I('#FFBB66')) 
+```
+可以看到,大部分都是在使用信用卡的,甚至有些超过1,这意味着一部分客户信用卡已经逾期,这让
+我很好奇,prosper给信用卡逾期的客户会借多少钱
+
+
+#客户信用等级
+```{r}
+q1 <- qplot(CreditScore,data = loandata,color=I('black'),fill=I('#00AA55')) +
+  xlim(400,800) + 
+  ggtitle('consumer credit rating')
+q2 <- qplot(CreditGrade,data = subset(loandata,LoanOriginationDate < "2009-07-01"),color=I('black'),fill=I('orange')) +
+  scale_x_discrete(limits = c("HR","E","D","C","B","A","AA")) + 
+  ggtitle('CreditScore before 2009')
+q3 <- qplot(x = ProsperRating..Alpha.,data = subset(loandata,
+  LoanOriginationDate > "2009-07-01"), color=I('black'),fill=I('#099DD9')) + 
+    scale_x_discrete(limits = c("HR","E","D","C","B","A","AA")) +
+   ggtitle('CreditScore after 2009')
+grid.arrange(q1,q2,q3) 
+``` 
+从图中可以看到,大部分人的消费信用评分都比较高,在700分左右集中,而根据时间划分的prosper信用评分(AA最高,HR最低)也比较均衡,在2009年之后的数据更偏向正态分布,这也跟数据量的扩充有关.
+#用户过去7年的违约次数
+```{r}
+ggplot(aes(x = DelinquenciesLast7Years),data = loandata)+
+  geom_density(aes(fill = I('#EEFFBB')))+
+  scale_x_continuous(limits = c(-1,quantile(loandata$DelinquenciesLast7Years,probs = 0.95,na.rm = TRUE)))
+summary(loandata$DelinquenciesLast7Years)
+```
+密度图中看到,大部分人在过去7年内的违约次数都为0,这也说明了借款人的资质比较好,至少在过去的违约次数较少,在一定程度上说明这些客户在未来违约的可能性会小一些.
+
+总结:
+
+1.大部分客户来源于加利福尼亚以及发达城市,说明网贷的分布集中在大城市中,这也许跟宣传,客户群体水平,客户推荐等有关系.
+
+2.借款人收入大都在$25000-$75000之间,但是也不乏一些低收入群体和没有工作的人,但是占比较少
+
+3.借款人的信用记录普遍较好,但是从信用卡使用角度来看,借款人的还款压力比较大.
+
+
+#资金借贷情况分析:
+```{r}
+#资金价格分布
+qplot(BorrowerRate,data = loandata,color = I('black'),
+            fill = I('#99BBFF')) +
+   scale_x_continuous(breaks = seq(0,0.4,0.1))
+```
+可以看到,借贷的利率大致是呈现正态分布的,在0.1-0.2的范围集中,借贷利率体现的是资金供求双方在综合考虑各种因素情况下所认可的资金使用成本.
+
+#资金借贷期限
+```{r}
+loandata$Term <- factor(loandata$Term)
+ggplot(aes(Term),data = loandata) + 
+  geom_bar(color=I('black'),fill = I('#56B4E9'))
+table(loandata$Term)
+```
+资金借贷期限以36期最多,占到了总的数据的80%之多
+
+#资金价格与期限的关系
+```{r}
+ggplot(aes(x = Term,y = BorrowerRate),data = loandata) + 
+  geom_boxplot() + 
+   stat_summary(fun.y = mean,geom = 'point',shape = 4)
+```
+从箱线图中可以看到,中位数与均值很接近,并且异常值很少,可以看出,资金价格与资金借贷期限似乎没有什么明显的关系
+
+#资金价格和客户收入
+```{r}
+ggplot(aes(StatedMonthlyIncome,BorrowerRate),data = subset(loandata,!is.na(StatedMonthlyIncome))) + 
+ stat_density2d(aes(alpha = ..density..), geom = 'tile', contour = FALSE) + 
+  scale_x_continuous(limits = c(0,30000))
+```
+从核密度图看出,月收入集中在$10000以下,但是没有看到资金价格与月收入有什么明显的关系
+
+#资金价格与消费信用评分的关系
+```{r}
+ggplot(aes(CreditScore,BorrowerRate),data = loandata) + 
+  geom_point() + 
+  facet_wrap(~Phase,ncol = 1) + 
+   scale_x_continuous(limits=c(400,900))+
+  scale_y_continuous(limits=c(0.0,0.4))+
+  geom_line(stat="summary", fun.y=mean)+
+  geom_line(stat="summary", fun.y=median,linetype=2,color="red")
+```
+这一点很有意思,在2009年前,prosper还借给评分给600分以下的客户,而在2009年之后,600分以下的
+客户基本没有了,这似乎说明了prosper在2009年7月1日之后对其信贷模式进行了修改 
+
+#资金价格与信用评级的关系(以2009年7月1日为时间节点
+```{r}
+#2009年7月1日前
+plot1 <- ggplot(aes(CreditGrade,BorrowerRate),data =subset(loandata,LoanOriginationDate < "2009-07-01")) +
+    scale_x_discrete(limits = c("HR","E","D","C","B","A","AA")) + 
+    geom_boxplot() +
+    stat_summary(fun.y = mean,geom = 'point',shape = 4) +
+    stat_summary(funy = mean,geom = 'smooth',aes(group = 1)) +
+  ggtitle("before 2009")
+plot2 <- ggplot(aes(ProsperRating..Alpha.,BorrowerRate),data =subset(loandata,LoanOriginationDate > "2009-07-01")) +
+  scale_x_discrete(limits = c("HR","E","D","C","B","A","AA")) + 
+  geom_boxplot() +
+  stat_summary(fun.y = mean,geom = 'point',shape = 4) +
+  stat_summary(funy = mean,geom = 'smooth',aes(group = 1)) + 
+  ggtitle("after 2009")
+grid.arrange(plot1,plot2,ncol = 1)
+  
+```
+(图中的线是均值连线),两张图进行比较,可以清晰看到,后面那张图均线的斜率更大,这说明了在2009年7月1日之后,prosper对借款人信用评级更加重视,评级决定资金价格的趋势更加明显,从另一方面说明了其贷款模型有所变化.
+
+#资金价格与贷款总额和信用评级的关系
+```{r}
+plot5 <-ggplot(aes(LoanOriginalAmount,BorrowerRate,color = CreditGrade),data = subset(loandata,LoanOriginationDate < "2009-07-01"& CreditGrade != 'NC')) +
+  geom_point() +
+  scale_color_brewer(type = 'seq',
+                     guide = guide_legend(title = 'CreditGrade',reverse = TRUE,
+                     override.aes = list(alpha = 1, size = 2))) + 
+  ggtitle("before 2009")
+plot6 <- ggplot(aes(LoanOriginalAmount,BorrowerRate,color = ProsperRating..Alpha.),
+       data = subset(loandata,LoanOriginationDate > "2009-07-01" 
+                     & !is.na(ProsperRating..Alpha.))) +
+  geom_point() +
+  scale_color_brewer(type = 'seq',
+                     guide = guide_legend(title = 'ProsperRating',reverse = TRUE,
+                     override.aes = list(alpha = 1, size = 2))) + 
+  ggtitle("after 2009")
+grid.arrange(plot5,plot6,ncol = 1)
+```
+从上面两个图形可以看到,在2009年7月1日前后,数据点有了很大的变化,从借贷资金来看,在时间节点之后,prosper开始借出一些超过25000的资金,并且由于2009年之后,prosper发展迅速,后图拥有更多的点,同时可以看出,随着借贷资金的增加,prosper逐渐降低了利率,这在2009年之前并未见到这种变化(当然也是由于2006年才建立,而大部分客户借的是36期有关)还有一点,后图图层的显示的更加分明,这也说明了proeper可能在2009年之后对贷款模型进行了修改,其资金价格与客户信用联系更加紧密了.
+
+#资金价格与贷款总额与信用卡使用的关系:
+```{r}
+plot7 <- ggplot(aes(LoanOriginalAmount,BorrowerRate,color = BankCardUse),data = subset(loandata,LoanOriginationDate < "2009-07-01"& CreditGrade != 'NC' & 
+   !is.na(BankCardUse))) +
+  geom_point() +
+  scale_color_brewer(type = 'qual',
+                     guide = guide_legend(title = 'BankCardUse',reverse = TRUE,
+                     override.aes = list(alpha = 1, size = 2))) + 
+   ggtitle("before 2009")
+plot8 <- ggplot(aes(LoanOriginalAmount,BorrowerRate,color = BankCardUse),
+       data = subset(loandata,LoanOriginationDate > "2009-07-01" 
+                     & !is.na(BankCardUse))) +
+  geom_point() +
+  scale_color_brewer(type = 'div',
+                     guide = guide_legend(title = 'BankCardUse',reverse = TRUE,
+                     override.aes = list(alpha = 1, size = 2))) +
+   ggtitle("after 2009")
+grid.arrange(plot7,plot8,ncol = 1)
+  
+```
+在信用卡使用程度来看,在时间节点前后似乎并没有什么变化,但是可以看出信用卡使用率低的用户得到了更低的资金贷款价格,这似乎验证了我们的观点,信用卡使用率越低,贷款利率也会有所下降.
+
+#拟合函数,检验相关性
+
+```{r}
+#2009年7月1日之前的函数
+m1 <- lm(I(BorrowerRate) ~ I(CreditScore), data = subset(loandata,
+           LoanOriginationDate < "2009-07-01"
+         & !is.na(CreditGrade) & !is.na(LoanOriginalAmount) & !is.na(BankCardUse) & !is.na(CreditScore)))
+m2 <- update(m1, ~ . + CreditGrade)
+m3 <- update(m2, ~ . + LoanOriginalAmount)
+m4 <- update(m3, ~ . + BankCardUse)
+mtable(m1, m2, m3, m4)
+```
+
+```{r}
+#2009年7月1日之后的函数
+m5 <- lm(I(BorrowerRate) ~ I(CreditScore), data = subset(loandata,
+           LoanOriginationDate > "2009-07-01"
+         & !is.na(ProsperRating..Alpha.) & !is.na(LoanOriginalAmount) & !is.na(BankCardUse)
+         & !is.na(CreditScore)))
+m6 <- update(m5, ~ . + ProsperRating..Alpha.)
+m7 <- update(m6, ~ . + LoanOriginalAmount)
+m8 <- update(m7, ~ . + BankCardUse)
+mtable(m5, m6, m7, m8)
+```
+两者拟合的函数P值都是0,说明函数拟合的较好,因此可以做比较.从R^2出发,总体来看,2009年之后的R^2(0.9)是明显大于2009年之前的(0.5),说明总体而言,prosper更加看中了几个信用评级的评分,从具体指标来看,prosper降低了对信用评分(creditscore)的比重,对信用评级和信用卡的使用的比重上升.
+
+总结:
+
+1.prosper的贷款利率分布均匀,但是在借款人中,借36期的人数比重最大.
+
+2.贷款利率与月收入的关系不大
+
+3.prosper在2009年之后对消费信用评分低于600的人不再发放贷款,这也许与他的贷款模型修改有关
+
+4.prosper在2009年7月1日之后更加看重客户的信用评级和信用卡使用情况,但是对消费信用贷款的重视程度有所下降
+
+
+背景资料:
+
+prosper贷款条件:
+
+贷款申请的合格标准为：1）在过去6个月内，少于7个信用局查询了申请人的信用信息；2）申请人自己声明有正的收入；3）债务收入比低于50%；4）在信用局报告上至少有3笔公开交易；5）在过去12个月内无申请破产。此外，第一次在平台出借的申请人需要有不低于640分的信用分数。
+
+以上几点,我们验证的几个观点得到证实,债务比以及信用分数我们已经预测到.
+
+事件:2008年11月24日，SEC判定Prosper违反了《1933年证券法》，要求Prosper暂定运营。经审查后，考虑P2P借贷模型的特性，SEC将所有P2P借贷定义为债券销售，要求所有P2P企业都在SEC登记注册。2008年11月26日，加州最高法院对Prosper提起集体诉讼，控告Prosper违反加州和联邦法律发行和出售未认证和注册的证券。诉讼寻求类认证、损害、撤销权和律师费。Prosper的保险商Greenwhich保险公司拒绝给予赔偿，表示这类事件不包含在保险政策中。2009年7月，Prosper的贷款在获得SEC的注册后，重新开发了网站。但重新开业后，竞标贷款限制在美国28个州和哥伦比亚地区的居民。有47个州的居民可以再Prosper上借款，另外三个州（Iowa、Maine、North Dakota）则不允许。
+
+在我们的EDA分析中,也看到了居民的分布情况,这一点得到验证,并且2009年7月1日之后prosper重新开业,修改了其借贷模型,这也与我们的预测接近.
+
+不足之处:
+
+1.第一次写这么长的报告,语言很烂,总结观点不够精炼
+
+2.数据分析的不够到位,没有对更多的指标进行更新
+
+3.只用线性回归局限性较大,待学习了聚类,随机森林的算法再来做这个数据,用其制作评分卡模型,来验证模型的准确性.
+
+
+
+总结图形:
+plot1:
+```{r}
+ggplot(aes(CreditScore,BorrowerRate),data = loandata) + 
+  geom_point() + 
+  facet_wrap(~Phase,ncol = 1) + 
+   scale_x_continuous(limits=c(400,900))+
+  scale_y_continuous(limits=c(0.0,0.4))+
+  geom_line(stat="summary", fun.y=mean)+
+  geom_line(stat="summary", fun.y=median,linetype=2,color="red")
+```
+这一点很有意思,在2009年前,prosper还借给评分给600分以下的客户,而在2009年之后,640分以下的客户基本没有了,这似乎说明了prosper在2009年7月1日之后对其信贷模式进行了修改,对600分以下的客户不允许放贷了.
+
+plot2:
+```{r}
+#2009年7月1日前
+plot1 <- ggplot(aes(CreditGrade,BorrowerRate),data =subset(loandata,LoanOriginationDate < "2009-07-01")) +
+    scale_x_discrete(limits = c("HR","E","D","C","B","A","AA")) + 
+    geom_boxplot() +
+    stat_summary(fun.y = mean,geom = 'point',shape = 4) +
+    stat_summary(funy = mean,geom = 'smooth',aes(group = 1)) +
+  ggtitle("before 2009")
+plot2 <- ggplot(aes(ProsperRating..Alpha.,BorrowerRate),data =subset(loandata,LoanOriginationDate > "2009-07-01")) +
+  scale_x_discrete(limits = c("HR","E","D","C","B","A","AA")) + 
+  geom_boxplot() +
+  stat_summary(fun.y = mean,geom = 'point',shape = 4) +
+  stat_summary(funy = mean,geom = 'smooth',aes(group = 1)) + 
+  ggtitle("after 2009")
+grid.arrange(plot1,plot2,ncol = 1)
+```
+(图中的线是均值连线),两张图进行比较,可以清晰看到,后面那张图均线的斜率更大,这说明了在2009年7月1日之后,prosper对借款人信用评级更加重视,评级决定资金价格的趋势更加明显,从另一方面说明了其贷款模型有所变化.
+
+plot3:
+```{r}
+plot5 <-ggplot(aes(LoanOriginalAmount,BorrowerRate,color = CreditGrade),data = subset(loandata,LoanOriginationDate < "2009-07-01"& CreditGrade != 'NC')) +
+  geom_point() +
+  scale_color_brewer(type = 'seq',
+                     guide = guide_legend(title = 'CreditGrade',reverse = TRUE,
+                     override.aes = list(alpha = 1, size = 2))) + 
+  ggtitle("before 2009")
+plot6 <- ggplot(aes(LoanOriginalAmount,BorrowerRate,color = ProsperRating..Alpha.),
+       data = subset(loandata,LoanOriginationDate > "2009-07-01" 
+                     & !is.na(ProsperRating..Alpha.))) +
+  geom_point() +
+  scale_color_brewer(type = 'seq',
+                     guide = guide_legend(title = 'ProsperRating',reverse = TRUE,
+                     override.aes = list(alpha = 1, size = 2))) + 
+  ggtitle("after 2009")
+grid.arrange(plot5,plot6,ncol = 1)
+```
+从上面两个图形可以看到,在2009年7月1日前后,数据点有了很大的变化,从借贷资金来看,在时间节点之后,prosper开始借出一些超过25000的资金,并且由于2009年之后,prosper发展迅速,后图拥有更多的点,同时可以看出,随着借贷资金的增加,prosper逐渐降低了利率,这在2009年之前并未见到这种变化(当然也是由于2006年才建立,而大部分客户借的是36期有关)还有一点,后图图层的显示的更加分明,这也说明了proeper可能在2009年之后对贷款模型进行了修改,其资金价格与客户信用联系更加紧密了.
+
+
+
